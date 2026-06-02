@@ -46,6 +46,8 @@ public class Warehouse {
     }
 
     public boolean setProductPrice(String productName, double price) {
-        return prices.put(productName, price) != null;
+        if (!stock.containsKey(productName)) return false;
+        prices.put(productName, price);
+        return true;
     }
 }
