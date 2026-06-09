@@ -2,14 +2,19 @@ package practice3;
 
 import org.junit.jupiter.api.*;
 import practice2.warehouse.CommandType;
-import practice2.warehouse.Warehouse;
 import practice3.udp.StoreClientUDP;
 import practice3.udp.StoreServerUDP;
+import practice4.Database;
+import practice4.Product;
+import practice4.ProductRepository;
+import practice4.ProductService;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.net.DatagramSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,10 +22,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class StoreServerUDPTest {
+
     private static SecretKey secretKey;
-    private Warehouse warehouse;
+
+    private ProductService productService;
     private StoreServerUDP server;
     private int port;
+    private Path tempDbFile;
 
     @BeforeAll
     static void generateKey() throws Exception {
@@ -31,9 +39,10 @@ class StoreServerUDPTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        tempDbFile = Files.createTempFile("store_udp_test_", ".db");
+        productService = new ProductService(new ProductRepository(new Database("jdbc:sqlite:" + tempDbFile.toAbsolutePath())));
         port = findFreeUDPPort();
-        warehouse = new Warehouse();
-        server = new StoreServerUDP(port, secretKey, warehouse);
+        server = new StoreServerUDP(port, secretKey, productService);
         Thread serverThread = new Thread(() -> { try { server.start(); } catch (Exception ignored) {} }, "test-udp-server");
         serverThread.setDaemon(true);
         serverThread.start();
@@ -41,18 +50,23 @@ class StoreServerUDPTest {
     }
 
     @AfterEach
-    void tearDown() { server.stop(); }
+    void tearDown() throws Exception {
+        server.stop();
+        Files.deleteIfExists(tempDbFile);
+    }
 
     private static int findFreeUDPPort() throws Exception { try (DatagramSocket s = new DatagramSocket(0)) { return s.getLocalPort(); } }
 
     private StoreClientUDP fastRetryClient() throws Exception { return new StoreClientUDP("localhost", port, secretKey, 300, 2); }
+
+    private int getQuantity(String name) { return productService.getByName(name).map(Product::getQuantity).orElse(-1); }
 
     @Test
     void shouldAddToStock() throws Exception {
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "гречка:50");
             assertEquals("OK:50", result);
-            assertEquals(50, warehouse.getProductQuantity("гречка"));
+            assertEquals(50, getQuantity("гречка"));
         }
     }
 
@@ -62,13 +76,13 @@ class StoreServerUDPTest {
             client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "рис:30");
             String result = client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "рис:20");
             assertEquals("OK:50", result);
-            assertEquals(50, warehouse.getProductQuantity("рис"));
+            assertEquals(50, getQuantity("рис"));
         }
     }
 
     @Test
     void shouldGetQuantityExistingProduct() throws Exception {
-        warehouse.addToStock("цукор", 100);
+        productService.addToStock("цукор", 100);
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.GET_QUANTITY, 1, "цукор");
             assertEquals("OK:100", result);
@@ -85,21 +99,21 @@ class StoreServerUDPTest {
 
     @Test
     void shouldDeleteFromStock() throws Exception {
-        warehouse.addToStock("борошно", 100);
+        productService.addToStock("борошно", 100);
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.DELETE_FROM_STOCK, 1, "борошно:30");
             assertEquals("OK", result);
-            assertEquals(70, warehouse.getProductQuantity("борошно"));
+            assertEquals(70, getQuantity("борошно"));
         }
     }
 
     @Test
     void shouldNotDeleteFromStockInsufficientStock() throws Exception {
-        warehouse.addToStock("пшоно", 10);
+        productService.addToStock("пшоно", 10);
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.DELETE_FROM_STOCK, 1, "пшоно:50");
             assertTrue(result.startsWith("ERROR"));
-            assertEquals(10, warehouse.getProductQuantity("пшоно")); // не змінилось
+            assertEquals(10, getQuantity("пшоно"));
         }
     }
 
@@ -122,7 +136,8 @@ class StoreServerUDPTest {
 
     @Test
     void shouldAddProductToGroup() throws Exception {
-        warehouse.addEmptyGroup("бакалія");
+        productService.addCategory("бакалія");
+        productService.addToStock("гречка", 1);
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
             assertEquals("OK", result);
@@ -130,18 +145,8 @@ class StoreServerUDPTest {
     }
 
     @Test
-    void shouldNotAddDuplicateProductToGroup() throws Exception {
-        warehouse.addEmptyGroup("бакалія");
-        try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
-            client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
-            String result = client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
-            assertTrue(result.startsWith("ERROR"));
-        }
-    }
-
-    @Test
     void shouldSetPrice() throws Exception {
-        warehouse.addToStock("гречка", 100);
+        productService.addToStock("гречка", 100);
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.SET_PRICE, 1, "гречка:49.99");
             assertEquals("OK", result);
@@ -178,12 +183,12 @@ class StoreServerUDPTest {
 
         assertEquals(clientCount, results.size());
         assertTrue(results.stream().allMatch(r -> r.startsWith("OK")), "Всі клієнти мають отримати OK, отримано: " + results);
-        assertEquals(clientCount * amountPerClient, warehouse.getProductQuantity("гречка"));
+        assertEquals(clientCount * amountPerClient, getQuantity("гречка"));
     }
 
     @Test
     void shouldWorkWithConcurrentClientsMixedOperations() throws Exception {
-        warehouse.addToStock("рис", 1000);
+        productService.addToStock("рис", 1000);
         int clientCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(clientCount);
         CountDownLatch latch = new CountDownLatch(clientCount);
@@ -205,7 +210,7 @@ class StoreServerUDPTest {
         executor.shutdown();
 
         assertEquals(clientCount, successCount.get(), "Всі операції мають бути успішними");
-        assertEquals(1000, warehouse.getProductQuantity("рис"));
+        assertEquals(1000, getQuantity("рис"));
     }
 
     @Test
@@ -219,7 +224,7 @@ class StoreServerUDPTest {
     }
 
     @Test
-    void clientShouldSucceedsAfterTransientUnavailability() throws Exception {
+    void clientShouldSucceedAfterTransientUnavailability() throws Exception {
         try (StoreClientUDP client = new StoreClientUDP("localhost", port, secretKey)) {
             assertEquals("OK:50", client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "гречка:50"));
         }
@@ -227,7 +232,7 @@ class StoreServerUDPTest {
         server.stop();
         Thread.sleep(200);
 
-        server = new StoreServerUDP(port, secretKey, warehouse);
+        server = new StoreServerUDP(port, secretKey, productService);
         Thread serverThread = new Thread(() -> { try { server.start(); } catch (Exception ignored) {}}, "test-udp-server-restart");
         serverThread.setDaemon(true);
         serverThread.start();

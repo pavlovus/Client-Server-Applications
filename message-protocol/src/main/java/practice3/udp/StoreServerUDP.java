@@ -5,7 +5,7 @@ import practice1.Encrypter;
 import practice1.Message;
 import practice1.Packet;
 import practice2.warehouse.CommandHandler;
-import practice2.warehouse.Warehouse;
+import practice4.ProductService;
 
 import javax.crypto.SecretKey;
 import java.net.*;
@@ -15,7 +15,6 @@ public class StoreServerUDP {
     private static final int MAX_PACKET_SIZE = 65507;
 
     private final int port;
-    private final Warehouse warehouse;
     private final ExecutorService workerPool;
 
     private final Decrypter decrypter;
@@ -25,12 +24,11 @@ public class StoreServerUDP {
     private volatile DatagramSocket socket;
     private volatile boolean running = false;
 
-    public StoreServerUDP(int port, SecretKey secretKey, Warehouse warehouse) {
+    public StoreServerUDP(int port, SecretKey secretKey, ProductService productService) {
         this.port = port;
-        this.warehouse = warehouse;
         this.decrypter = new Decrypter(secretKey);
         this.encrypter = new Encrypter(secretKey);
-        this.commandHandler = new CommandHandler(warehouse);
+        this.commandHandler = new CommandHandler(productService);
         this.workerPool = Executors.newCachedThreadPool(r -> {Thread t = new Thread(r, "udp-worker");
             t.setDaemon(true);
             return t;

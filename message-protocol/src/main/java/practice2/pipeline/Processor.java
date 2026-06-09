@@ -3,7 +3,7 @@ package practice2.pipeline;
 import practice1.Message;
 import practice1.Packet;
 import practice2.warehouse.CommandHandler;
-import practice2.warehouse.Warehouse;
+import practice4.ProductService;
 
 import java.util.concurrent.BlockingQueue;
 
@@ -12,10 +12,10 @@ public class Processor implements Runnable {
     private final BlockingQueue<Packet> outputQueue;
     private final CommandHandler commandHandler;
 
-    public Processor(BlockingQueue<Packet> inputQueue, BlockingQueue<Packet> outputQueue, Warehouse warehouse) {
+    public Processor(BlockingQueue<Packet> inputQueue, BlockingQueue<Packet> outputQueue, ProductService productService) {
         this.inputQueue = inputQueue;
         this.outputQueue = outputQueue;
-        this.commandHandler = new CommandHandler(warehouse);
+        this.commandHandler = new CommandHandler(productService);
     }
 
     @Override

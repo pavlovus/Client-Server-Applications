@@ -4,8 +4,8 @@ import practice1.Decrypter;
 import practice1.Encrypter;
 import practice1.Packet;
 import practice2.warehouse.CommandHandler;
-import practice2.warehouse.Warehouse;
 import practice1.Message;
+import practice4.ProductService;
 
 import javax.crypto.SecretKey;
 import java.io.*;
@@ -17,16 +17,16 @@ public class StoreServerTCP {
 
     private final int port;
     private final SecretKey secretKey;
-    private final Warehouse warehouse;
+    private final ProductService productService;
     private final ExecutorService clientPool;
 
     private volatile ServerSocket serverSocket;
     private volatile boolean running = false;
 
-    public StoreServerTCP(int port, SecretKey secretKey,  Warehouse warehouse) {
+    public StoreServerTCP(int port, SecretKey secretKey, ProductService productService) {
         this.port = port;
         this.secretKey = secretKey;
-        this.warehouse = warehouse;
+        this.productService = productService;
         this.clientPool = Executors.newCachedThreadPool(r -> { Thread t = new Thread(r, "tcp-client-handler"); t.setDaemon(true); return t; });
     }
 
@@ -40,7 +40,7 @@ public class StoreServerTCP {
                 Socket clientSocket = serverSocket.accept();
                 clientSocket.setSoTimeout(30_000);
                 System.out.println("[TCP Server] Client connected: " + clientSocket.getRemoteSocketAddress());
-                clientPool.submit(new ClientHandler(clientSocket, secretKey, warehouse));
+                clientPool.submit(new ClientHandler(clientSocket, secretKey, productService));
             } catch (SocketException e) { if (running) System.err.println("[TCP Server] Accept error: " + e.getMessage()); }
         }
     }
@@ -60,11 +60,11 @@ public class StoreServerTCP {
         private final Encrypter encrypter;
         private final CommandHandler commandHandler;
 
-        ClientHandler(Socket socket, SecretKey secretKey, Warehouse warehouse) {
+        ClientHandler(Socket socket, SecretKey secretKey, ProductService productService) {
             this.socket = socket;
             this.decrypter = new Decrypter(secretKey);
             this.encrypter = new Encrypter(secretKey);
-            this.commandHandler = new CommandHandler(warehouse);
+            this.commandHandler = new CommandHandler(productService);
         }
 
         @Override

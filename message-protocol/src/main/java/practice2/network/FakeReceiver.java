@@ -60,6 +60,11 @@ public class FakeReceiver implements Receiver, Runnable {
             case ADD_GROUP -> group;
             case ADD_PRODUCT_TO_GROUP -> group + ":" + product;
             case SET_PRICE -> product + ":" + String.format("%.2f", random.nextDouble() * 100);
+            case CREATE -> "0|" + product + "|" + group + "|" + (random.nextInt(50) + 1) + "|" + String.format("%.2f", random.nextDouble() * 100);
+            case GET -> String.valueOf(random.nextInt(10) + 1);
+            case UPDATE -> (random.nextInt(10) + 1) + "|" + product + "|" + group + "|" + (random.nextInt(50) + 1) + "|" + String.format("%.2f", random.nextDouble() * 100);
+            case DELETE -> product;
+            case SEARCH -> "name=" + product + ";page=0;pageSize=5";
         };
     }
 }

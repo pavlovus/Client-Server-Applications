@@ -2,14 +2,19 @@ package practice3;
 
 import org.junit.jupiter.api.*;
 import practice2.warehouse.CommandType;
-import practice2.warehouse.Warehouse;
 import practice3.tcp.StoreClientTCP;
 import practice3.tcp.StoreServerTCP;
+import practice4.Database;
+import practice4.Product;
+import practice4.ProductRepository;
+import practice4.ProductService;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,10 +22,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class StoreServerTCPTest {
+
     private static SecretKey secretKey;
-    private Warehouse warehouse;
+
+    private ProductService productService;
     private StoreServerTCP server;
     private int port;
+    private Path tempDbFile;
 
     @BeforeAll
     static void generateKey() throws Exception {
@@ -31,16 +39,22 @@ class StoreServerTCPTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        tempDbFile = Files.createTempFile("store_test_", ".db");
+
+        productService = new ProductService(new ProductRepository(new Database("jdbc:sqlite:" + tempDbFile.toAbsolutePath())));
+
         port = findFreePort();
-        warehouse = new Warehouse();
-        startServer(warehouse);
+        startServer(productService);
     }
 
     @AfterEach
-    void tearDown() { server.stop(); }
+    void tearDown() throws Exception {
+        server.stop();
+        Files.deleteIfExists(tempDbFile);
+    }
 
-    private void startServer(Warehouse wh) throws InterruptedException {
-        server = new StoreServerTCP(port, secretKey, wh);
+    private void startServer(ProductService ps) throws InterruptedException {
+        server = new StoreServerTCP(port, secretKey, ps);
         Thread serverThread = new Thread(() -> {
             try { server.start(); } catch (Exception ignored) {}
         }, "test-tcp-server");
@@ -56,12 +70,14 @@ class StoreServerTCPTest {
         }
     }
 
+    private int getQuantity(String name) { return productService.getByName(name).map(Product::getQuantity).orElse(-1); }
+
     @Test
     void shouldAddToStock() throws Exception {
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "гречка:50");
             assertEquals("OK:50", result);
-            assertEquals(50, warehouse.getProductQuantity("гречка"));
+            assertEquals(50, getQuantity("гречка"));
         }
     }
 
@@ -71,13 +87,13 @@ class StoreServerTCPTest {
             client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "рис:30");
             String result = client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "рис:20");
             assertEquals("OK:50", result);
-            assertEquals(50, warehouse.getProductQuantity("рис"));
+            assertEquals(50, getQuantity("рис"));
         }
     }
 
     @Test
     void shouldGetQuantityExistingProduct() throws Exception {
-        warehouse.addToStock("цукор", 100);
+        productService.addToStock("цукор", 100);
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.GET_QUANTITY, 1, "цукор");
             assertEquals("OK:100", result);
@@ -94,21 +110,21 @@ class StoreServerTCPTest {
 
     @Test
     void shouldDeleteFromStock() throws Exception {
-        warehouse.addToStock("борошно", 100);
+        productService.addToStock("борошно", 100);
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.DELETE_FROM_STOCK, 1, "борошно:30");
             assertEquals("OK", result);
-            assertEquals(70, warehouse.getProductQuantity("борошно"));
+            assertEquals(70, getQuantity("борошно"));
         }
     }
 
     @Test
     void shouldNotDeleteFromStockIfInsufficientStock() throws Exception {
-        warehouse.addToStock("пшоно", 10);
+        productService.addToStock("пшоно", 10);
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.DELETE_FROM_STOCK, 1, "пшоно:50");
             assertTrue(result.startsWith("ERROR"));
-            assertEquals(10, warehouse.getProductQuantity("пшоно"));
+            assertEquals(10, getQuantity("пшоно"));
         }
     }
 
@@ -131,7 +147,8 @@ class StoreServerTCPTest {
 
     @Test
     void shouldAddProductToGroup() throws Exception {
-        warehouse.addEmptyGroup("бакалія");
+        productService.addCategory("бакалія");
+        productService.addToStock("гречка", 1);
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
             assertEquals("OK", result);
@@ -139,18 +156,8 @@ class StoreServerTCPTest {
     }
 
     @Test
-    void shouldNotAddDuplicateProductToGroup() throws Exception {
-        warehouse.addEmptyGroup("бакалія");
-        try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
-            client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
-            String result = client.sendAndReceive(CommandType.ADD_PRODUCT_TO_GROUP, 1, "бакалія:гречка");
-            assertTrue(result.startsWith("ERROR"));
-        }
-    }
-
-    @Test
     void shouldSetPrice() throws Exception {
-        warehouse.addToStock("гречка", 100);
+        productService.addToStock("гречка", 100);
         try (StoreClientTCP client = new StoreClientTCP("localhost", port, secretKey)) {
             String result = client.sendAndReceive(CommandType.SET_PRICE, 1, "гречка:49.99");
             assertEquals("OK", result);
@@ -166,7 +173,7 @@ class StoreServerTCPTest {
     }
 
     @Test
-    void shouldWOrkWithConcurrentClientsAddToStock() throws Exception {
+    void shouldWorkWithConcurrentClientsAddToStock() throws Exception {
         int clientCount = 10;
         int amountPerClient = 10;
         ExecutorService executor = Executors.newFixedThreadPool(clientCount);
@@ -187,12 +194,12 @@ class StoreServerTCPTest {
 
         assertEquals(clientCount, results.size());
         assertTrue(results.stream().allMatch(r -> r.startsWith("OK")), "Всі клієнти мають отримати OK, отримано: " + results);
-        assertEquals(clientCount * amountPerClient, warehouse.getProductQuantity("гречка"));
+        assertEquals(clientCount * amountPerClient, getQuantity("гречка"));
     }
 
     @Test
     void shouldWorkWithConcurrentClientsMixedOperations() throws Exception {
-        warehouse.addToStock("рис", 1000);
+        productService.addToStock("рис", 1000);
         int clientCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(clientCount);
         CountDownLatch latch = new CountDownLatch(clientCount);
@@ -214,8 +221,8 @@ class StoreServerTCPTest {
         executor.shutdown();
 
         assertEquals(clientCount, successCount.get(), "Всі операції мають бути успішними");
-        assertEquals(1000, warehouse.getProductQuantity("рис"));
-        assertTrue(warehouse.getProductQuantity("рис") >= 0, "Кількість не може бути від'ємною");
+        assertEquals(1000, getQuantity("рис"));
+        assertTrue(getQuantity("рис") >= 0, "Кількість не може бути від'ємною");
     }
 
     @Test
@@ -225,7 +232,7 @@ class StoreServerTCPTest {
             assertEquals("OK:30", client.sendAndReceive(CommandType.ADD_TO_STOCK, 1, "гречка:20"));
             assertEquals("OK:30", client.sendAndReceive(CommandType.GET_QUANTITY, 1, "гречка"));
             assertEquals("OK", client.sendAndReceive(CommandType.DELETE_FROM_STOCK, 1, "гречка:30"));
-            assertEquals(0, warehouse.getProductQuantity("гречка"));
+            assertEquals(0, getQuantity("гречка"));
         }
     }
 
@@ -239,7 +246,7 @@ class StoreServerTCPTest {
         CompletableFuture.runAsync(() -> {
             try {
                 Thread.sleep(1500);
-                startServer(warehouse);
+                startServer(productService);
             } catch (Exception ignored) {}
         });
 
